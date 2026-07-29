@@ -61,7 +61,10 @@ Set these in the Vercel project (Settings → Environment Variables), for Produc
 | `NOTION_SOURCE_DB_ID` | Custom: Web Leads |
 | `NOTION_TARGET_DB_ID` | BD Profiles |
 | `GOOGLE_API_KEY` | AI Studio, billing enabled — grounding is not on the free tier |
-| `BD_USER` / `BD_PASSWORD` | basic auth for the UI |
+| `BD_USER` / `BD_PASSWORD` | basic auth for the UI — omit if using `AUTH_MODE=vercel` |
+| `AUTH_MODE` | set to `vercel` when Vercel Authentication protects the project |
+
+**On a Vercel team, use Vercel Authentication** (Settings → Deployment Protection → All Deployments). It gates access by org identity rather than a shared password, so you can tell who published what. Set `AUTH_MODE=vercel` so [middleware.ts](middleware.ts) stands down — Deployment Protection runs before middleware, and leaving both on means signing in twice. Protecting the *production* domain needs Pro or Enterprise; on Hobby, Standard Protection covers preview URLs only and production stays public.
 
 **Auth is not optional.** The UI lists every lead's name, email and company, and `/api/enrich` and `/api/publish` spend money and write to Notion with no rate limiting. [middleware.ts](middleware.ts) returns 500 rather than serving if `BD_PASSWORD` is missing, so a forgotten variable fails closed instead of publishing the queue.
 

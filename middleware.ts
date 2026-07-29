@@ -10,8 +10,16 @@ import { NextResponse, type NextRequest } from "next/server";
  * Set BD_USER and BD_PASSWORD in the Vercel project's environment variables.
  * If BD_PASSWORD is unset the app refuses to serve rather than falling open —
  * a missing variable in production should not silently mean "no password".
+ *
+ * On a Vercel team, prefer Vercel Authentication (Settings → Deployment
+ * Protection): it restricts access to org members by identity rather than a
+ * shared password, so you know who published what. It runs *before* this
+ * middleware, so leaving both on means signing in twice — set AUTH_MODE=vercel
+ * to stand down and let Vercel be the only gate.
  */
 export function middleware(req: NextRequest) {
+  if (process.env.AUTH_MODE === "vercel") return NextResponse.next();
+
   const user = process.env.BD_USER || "bd";
   const password = process.env.BD_PASSWORD;
 
