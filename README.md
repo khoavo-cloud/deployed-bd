@@ -46,6 +46,25 @@ Nothing is written to Notion until you click **Write to Notion**.
 
 **The Gemini free tier is not private.** On the free tier Google may use prompts and responses, with human review, to improve its models — and these prompts carry lead names, emails, and company details belonging to other people. Linking a billing account is the documented boundary where that stops. Free tier is also Flash-only since April 2026.
 
-## Deploying
+## Deploying to Vercel
 
-Any Node host works. On Vercel, note that `/api/enrich` can run for minutes — `maxDuration` is set to 300s, which needs a Pro plan. On Hobby, run enrichment as a batch script instead of through the route.
+```bash
+npx vercel          # preview
+npx vercel --prod   # production
+```
+
+Set these in the Vercel project (Settings → Environment Variables), for Production **and** Preview — a preview deployment without them will refuse to serve:
+
+| Variable | |
+|---|---|
+| `NOTION_TOKEN` | integration token, both databases shared with it |
+| `NOTION_SOURCE_DB_ID` | Custom: Web Leads |
+| `NOTION_TARGET_DB_ID` | BD Profiles |
+| `GOOGLE_API_KEY` | AI Studio, billing enabled — grounding is not on the free tier |
+| `BD_USER` / `BD_PASSWORD` | basic auth for the UI |
+
+**Auth is not optional.** The UI lists every lead's name, email and company, and `/api/enrich` and `/api/publish` spend money and write to Notion with no rate limiting. [middleware.ts](middleware.ts) returns 500 rather than serving if `BD_PASSWORD` is missing, so a forgotten variable fails closed instead of publishing the queue.
+
+**`/api/enrich` needs a Pro plan.** Research takes 16–96s per lead and `maxDuration` is set to 300s in [vercel.json](vercel.json). Hobby caps functions at 60s, so slower leads will time out mid-research. On Hobby, use the batch script locally instead and treat the deployment as read-only review.
+
+The batch scripts in `scripts/` are CLI tools and don't run on Vercel — they read `.env.local` directly. Run them from a machine that has it.
