@@ -10,22 +10,26 @@ Notion: Inbound Leads  →  research + score  →  Notion: Scored Profiles
 
 ## Setup
 
-1. **Create a Notion integration** at <https://www.notion.so/my-integrations> and copy the token.
-2. **Share both databases with it** — open each database, `•••` → Connections → your integration. Without this the API returns 404 even with a valid token.
-3. Copy `.env.example` to `.env.local` and fill it in.
-4. Install and inspect your schemas:
+Requires Node 20+.
+
+1. **Get access to the Notion integration.** Its token is in the team password store, not in this repo. If you are creating your own, make one at <https://www.notion.so/my-integrations> and share **both** databases with it (`•••` → Connections → your integration). Without that share the API returns 404 even with a valid token — it is the most common setup failure.
+2. **Get a Google AI Studio key** from <https://aistudio.google.com/apikey>, on a project with **billing enabled**. Search grounding is not available on the free tier and fails with `429 RESOURCE_EXHAUSTED`.
+3. Copy `.env.example` to `.env.local` and fill in the two keys plus both database ids.
+4. Install and confirm your credentials reach both databases:
 
 ```bash
-npm install && npm run inspect:notion
+npm install && npm run discover:notion
 ```
 
-5. Edit `SOURCE_FIELDS` and `TARGET_FIELDS` in [lib/config.ts](lib/config.ts) to match the property names that command printed. Any target property you leave out is simply skipped on write — a partial schema won't break the publish.
+You should see **Custom: Web Leads** and **BD Profiles**. "No databases visible" means step 1's share is missing.
 
-6. Run it:
+5. Run it:
 
 ```bash
-npm run dev
+npm run dev     # http://localhost:3210
 ```
+
+The field mapping in [lib/config.ts](lib/config.ts) already matches these two databases — you only need to touch it if someone renames a property in Notion. `npm run inspect:notion` prints the live schemas to compare against. Any target property that no longer matches is reported after a publish rather than failing the write, so drift is visible instead of silent.
 
 ## How it works
 
