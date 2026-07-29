@@ -1,0 +1,28 @@
+{
+  "name": "deployed-bd",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev -p 3210",
+    "build": "next build",
+    "start": "next start -p 3210",
+    "inspect:notion": "tsx scripts/inspect-notion.ts",
+    "discover:notion": "tsx scripts/discover-notion.ts",
+    "triage": "tsx scripts/triage.ts",
+    "enrich:batch": "tsx scripts/enrich-batch.ts"
+  },
+  "dependencies": {
+    "@google/genai": "^2.13.0",
+    "@notionhq/client": "^2.2.15",
+    "next": "^15.5.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.1.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
