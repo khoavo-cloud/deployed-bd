@@ -8,3 +8,9 @@ next-env.d.ts
 # local analysis output
 triage.csv
 batch-run.log
+
+.vercel
+.env*
+# ...but the template must stay tracked; it is the only setup documentation
+# that lists every required variable.
+!.env.example
