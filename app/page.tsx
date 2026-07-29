@@ -50,18 +50,45 @@ export default function Page() {
     setPublished(null);
   }
 
+  /**
+   * Research a lead and write the profile straight to Notion.
+   *
+   * There is no approve step: triage happens in the Notion views, which is
+   * where the queue is actually worked. If the publish fails the profile stays
+   * on screen with a retry button rather than being discarded — the research is
+   * already paid for and re-running it would cost again.
+   */
   async function enrich() {
     if (!selected) return;
+    const lead = selected;
     setBusy("enrich");
     setError(null);
     try {
       const res = await fetch("/api/enrich", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ leadId: selected.id }),
+        body: JSON.stringify({ leadId: lead.id }),
       }).then((r) => r.json());
-      if (res.error) setError(res.error);
-      else setResult({ profile: res.profile, findings: res.findings });
+      if (res.error) {
+        setError(res.error);
+        return;
+      }
+      setResult({ profile: res.profile, findings: res.findings });
+
+      setBusy("publish");
+      const pub = await fetch("/api/publish", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ leadId: lead.id, profile: res.profile }),
+      }).then((r) => r.json());
+      if (pub.error) {
+        setError(`Researched, but the write to Notion failed: ${pub.error}`);
+        return;
+      }
+      setPublished(pub.url);
+      setDropped(pub.dropped ?? []);
+      setLeads((prev) => prev.filter((l) => l.id !== lead.id));
+      setCounts((c) => (c ? { ...c, queue: c.queue - 1, done: c.done + 1 } : c));
     } catch (e) {
       setError(String(e));
     } finally {
@@ -105,8 +132,6 @@ export default function Page() {
    *
    * Each lead is a separate pair of requests rather than one long server call,
    * so nothing runs against the function timeout however many are selected.
-   * Unlike the single-lead flow there is no review step — bulk publishes what it
-   * finds — so the confirmation states that plainly before anything is spent.
    */
   async function runBulk() {
     const queue = leads.filter((l) => ticked.has(l.id));
@@ -117,7 +142,7 @@ export default function Page() {
       `Research and publish ${queue.length} lead${queue.length === 1 ? "" : "s"}?\n\n` +
         `· Takes roughly ${minutes} minute${minutes === 1 ? "" : "s"} — keep this tab open\n` +
         `· Each lead costs a Gemini research call\n` +
-        `· Profiles are written to Notion automatically, without review\n\n` +
+        `· Each profile is written to Notion as it finishes\n\n` +
         `You can stop between leads.`,
     );
     if (!ok) return;
@@ -315,11 +340,15 @@ export default function Page() {
                 {selected.message}
               </p>
               <button onClick={enrich} disabled={busy !== null} style={button}>
-                {busy === "enrich" ? "Researching…" : "Research & score"}
+                {busy === "enrich"
+                  ? "Researching…"
+                  : busy === "publish"
+                    ? "Writing to Notion…"
+                    : "Research & publish"}
               </button>
               {busy === "enrich" && (
                 <span style={{ marginLeft: 10, color: "#78716c", fontSize: 13 }}>
-                  Web research usually takes 1–3 minutes.
+                  Web research usually takes 30–90 seconds, then it writes to Notion.
                 </span>
               )}
             </div>
@@ -391,18 +420,16 @@ export default function Page() {
                 </pre>
               </details>
 
-              <button onClick={publish} disabled={busy !== null} style={button}>
-                {busy === "publish" ? "Writing…" : "Write to Notion"}
-              </button>
-              {published && (
-                <a
-                  href={published}
-                  target="_blank"
-                  rel="noreferrer"
-                  style={{ marginLeft: 10 }}
-                >
-                  Open the created page
+              {published ? (
+                <a href={published} target="_blank" rel="noreferrer">
+                  ✓ Written to Notion — open the profile
                 </a>
+              ) : (
+                // Only reachable when the automatic write failed; the research
+                // is already paid for, so offer a retry rather than losing it.
+                <button onClick={publish} disabled={busy !== null} style={button}>
+                  {busy === "publish" ? "Writing…" : "Retry write to Notion"}
+                </button>
               )}
               {dropped.length > 0 && (
                 <div style={{ marginTop: 12, color: "#b45309", fontSize: 13 }}>
