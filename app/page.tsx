@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Lead, Profile } from "../lib/types";
 
 type Result = { profile: Profile; findings: string };
@@ -17,6 +17,19 @@ export default function Page() {
     queue: number;
     skipped: number;
     done: number;
+  } | null>(null);
+
+  // Bulk run: ticked leads plus live progress. The stop flag is a ref, not
+  // state — the loop needs to read it synchronously between leads, and stale
+  // state inside a running async loop would let it keep spending after Stop.
+  const [ticked, setTicked] = useState<Set<string>>(new Set());
+  const stopRef = useRef(false);
+  const [bulk, setBulk] = useState<{
+    total: number;
+    done: number;
+    current: string;
+    log: string[];
+    stopping: boolean;
   } | null>(null);
 
   useEffect(() => {
@@ -79,6 +92,87 @@ export default function Page() {
     }
   }
 
+  function toggle(id: string) {
+    setTicked((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  /**
+   * Research and publish every ticked lead, one at a time.
+   *
+   * Each lead is a separate pair of requests rather than one long server call,
+   * so nothing runs against the function timeout however many are selected.
+   * Unlike the single-lead flow there is no review step — bulk publishes what it
+   * finds — so the confirmation states that plainly before anything is spent.
+   */
+  async function runBulk() {
+    const queue = leads.filter((l) => ticked.has(l.id));
+    if (!queue.length) return;
+
+    const minutes = Math.ceil((queue.length * 45) / 60);
+    const ok = window.confirm(
+      `Research and publish ${queue.length} lead${queue.length === 1 ? "" : "s"}?\n\n` +
+        `· Takes roughly ${minutes} minute${minutes === 1 ? "" : "s"} — keep this tab open\n` +
+        `· Each lead costs a Gemini research call\n` +
+        `· Profiles are written to Notion automatically, without review\n\n` +
+        `You can stop between leads.`,
+    );
+    if (!ok) return;
+
+    setError(null);
+    setSelected(null);
+    setResult(null);
+    stopRef.current = false;
+    let done = 0;
+    const log: string[] = [];
+    setBulk({ total: queue.length, done, current: "", log, stopping: false });
+
+    for (const lead of queue) {
+      if (stopRef.current) break;
+      setBulk((b) => (b ? { ...b, current: lead.email } : b));
+
+      try {
+        const e = await fetch("/api/enrich", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ leadId: lead.id }),
+        }).then((r) => r.json());
+        if (e.error) throw new Error(e.error);
+
+        const p = await fetch("/api/publish", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ leadId: lead.id, profile: e.profile }),
+        }).then((r) => r.json());
+        if (p.error) throw new Error(p.error);
+
+        log.unshift(
+          `${e.profile.companyName} — ${e.profile.scores.total}/100 ${e.profile.recommendation}`,
+        );
+        setLeads((prev) => prev.filter((l) => l.id !== lead.id));
+        setTicked((prev) => {
+          const next = new Set(prev);
+          next.delete(lead.id);
+          return next;
+        });
+      } catch (err: any) {
+        // Left in the queue on purpose — a failed lead should be retryable.
+        log.unshift(`${lead.email} — FAILED: ${String(err.message).slice(0, 80)}`);
+      }
+
+      done++;
+      setBulk((b) => (b ? { ...b, done, log: [...log] } : b));
+    }
+
+    setBulk((b) => (b ? { ...b, current: "" } : b));
+    setCounts((c) => (c ? { ...c, queue: c.queue - done, done: c.done + done } : c));
+  }
+
+  const running = bulk !== null && bulk.done < bulk.total && !bulk.stopping;
+
   return (
     <div>
       <h1 style={{ fontSize: 24, marginBottom: 4 }}>Deployed BD</h1>
@@ -96,30 +190,119 @@ export default function Page() {
 
       <div style={{ display: "grid", gridTemplateColumns: "320px 1fr", gap: 20 }}>
         <div>
+          {leads.length > 0 && (
+            <div style={{ ...card, padding: 10, display: "flex", alignItems: "center", gap: 8 }}>
+              <input
+                type="checkbox"
+                checked={ticked.size === leads.length && leads.length > 0}
+                onChange={(e) =>
+                  setTicked(e.target.checked ? new Set(leads.map((l) => l.id)) : new Set())
+                }
+                disabled={running}
+              />
+              <span style={{ fontSize: 13, color: "#78716c", flex: 1 }}>
+                {ticked.size ? `${ticked.size} selected` : "Select all"}
+              </span>
+              <button
+                onClick={runBulk}
+                disabled={running || ticked.size === 0}
+                style={{
+                  ...button,
+                  padding: "5px 10px",
+                  fontSize: 13,
+                  opacity: running || ticked.size === 0 ? 0.4 : 1,
+                }}
+              >
+                Run {ticked.size || ""}
+              </button>
+            </div>
+          )}
+
           {leads.map((lead) => (
-            <button
+            <div
               key={lead.id}
-              onClick={() => select(lead)}
               style={{
                 ...card,
-                width: "100%",
-                textAlign: "left",
-                cursor: "pointer",
+                display: "flex",
+                gap: 8,
+                cursor: running ? "default" : "pointer",
                 background: selected?.id === lead.id ? "#f5f5f4" : "#fff",
               }}
             >
-              <strong>{lead.company || lead.name || "(untitled)"}</strong>
-              <div style={{ color: "#78716c", fontSize: 13 }}>{lead.email}</div>
-              <div style={{ color: "#a8a29e", fontSize: 12 }}>
-                {lead.segment}
-                {lead.language !== "en" && ` · ${lead.language}`}
+              <input
+                type="checkbox"
+                checked={ticked.has(lead.id)}
+                onChange={() => toggle(lead.id)}
+                disabled={running}
+                style={{ marginTop: 3 }}
+              />
+              <div
+                onClick={() => !running && select(lead)}
+                style={{ flex: 1, minWidth: 0 }}
+              >
+                <strong>{lead.company || lead.name || "(untitled)"}</strong>
+                <div style={{ color: "#78716c", fontSize: 13 }}>{lead.email}</div>
+                <div style={{ color: "#a8a29e", fontSize: 12 }}>
+                  {lead.segment}
+                  {lead.language !== "en" && ` · ${lead.language}`}
+                </div>
               </div>
-            </button>
+            </div>
           ))}
         </div>
 
         <div>
-          {!selected && <div style={card}>Select a lead to build its profile.</div>}
+          {bulk && (
+            <div style={card}>
+              <h3 style={{ marginTop: 0 }}>
+                {running
+                  ? `Researching ${bulk.done + 1} of ${bulk.total}…`
+                  : `Finished — ${bulk.done} of ${bulk.total} processed`}
+              </h3>
+              {running && (
+                <>
+                  <p style={{ color: "#78716c", fontSize: 13 }}>
+                    {bulk.current} · keep this tab open
+                  </p>
+                  <button
+                    onClick={() => {
+                      stopRef.current = true;
+                      setBulk((b) => (b ? { ...b, stopping: true } : b));
+                    }}
+                    style={{ ...button, background: "#fff", color: "#1c1917" }}
+                  >
+                    Stop after this lead
+                  </button>
+                </>
+              )}
+              <ul style={{ fontSize: 13, paddingLeft: 18 }}>
+                {bulk.log.map((line, i) => (
+                  <li key={i} style={{ color: line.includes("FAILED") ? "#b45309" : "#44403c" }}>
+                    {line}
+                  </li>
+                ))}
+              </ul>
+              {!running && (
+                <p style={{ fontSize: 13, color: "#78716c" }}>
+                  Profiles are in Notion. Anything that failed is still in the queue — run it again.
+                </p>
+              )}
+            </div>
+          )}
+
+          {!selected && !bulk && leads.length > 0 && (
+            <div style={card}>Select a lead to build its profile, or tick several and press Run.</div>
+          )}
+
+          {!selected && !bulk && leads.length === 0 && counts && (
+            <div style={card}>
+              <strong>Queue is empty.</strong>
+              <p style={{ color: "#78716c", marginBottom: 0 }}>
+                All {counts.done} researched leads are in Notion, and {counts.skipped} were
+                skipped as unresearchable. New form submissions appear here — reload to check.
+              </p>
+            </div>
+          )}
 
           {selected && (
             <div style={card}>
