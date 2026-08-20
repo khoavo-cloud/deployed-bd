@@ -1,9 +1,11 @@
 # Deployed BD
 
-Reads inbound leads from one Notion database, researches and scores each one, and writes an enriched profile to a second Notion database.
+Reads inbound leads from a Notion database **or an uploaded CSV/XLSX**, researches and scores each one, and writes an enriched profile to a second Notion database.
 
 ```
-Notion: Inbound Leads  →  research + score  →  Notion: Scored Profiles
+Notion: Custom: Web Leads  ┐
+                           ├→  triage → research → score  →  Notion: BD Profiles
+CSV / XLSX upload          ┘
 ```
 
 **Score = legit business + relevant AI business + contact holds a real role + usage potential** (0–25 each, 100 total). When the inbound contact is wrong or too junior, the profile lists senior decision makers found during research.
@@ -36,9 +38,10 @@ The field mapping in [lib/config.ts](lib/config.ts) already matches these two da
 - [lib/triage.ts](lib/triage.ts) — offline classification, no API calls. Two thirds of submissions come from consumer mailboxes, so leads are first sorted by whether there is anything to research at all. A consumer address with no company name is marked Unresearchable and skipped rather than burning a full web-search pass to find nothing. `scripts/triage.ts` runs the same rules over a CSV export.
 - [lib/notion.ts](lib/notion.ts) — reads leads, writes profiles. Submissions are collapsed to one lead per email. `publishProfile` checks the target database's real schema and sends only properties that exist with a matching type — and returns the ones it had to drop, so schema drift is visible instead of silent.
 - [lib/enrich.ts](lib/enrich.ts) — two Gemini calls. The first researches the company with Google Search grounding (in local language as well as English) and writes up findings; the second converts those findings into the scored record via `responseSchema`. Splitting them keeps the scoring honest — it can only score what the research actually turned up — and it is also what makes citations work, since grounding metadata comes back empty when search and structured output are combined in one call. `evidenceUrls` is taken from that metadata rather than from the model's prose, so every URL is one a search really returned.
-- [app/page.tsx](app/page.tsx) — pick a lead, review the generated profile and the raw research notes, then write it to Notion.
+- [lib/intake.ts](lib/intake.ts) — the other intake route: an uploaded CSV or XLSX becomes the same `Lead` shape the Notion reader produces, so triage, research, scoring and publishing are all unchanged. Column names are matched loosely (`E-Mail`, `email address` and `Email` all resolve), because these files come from whatever tool exported them; only an email column is required. Leads already present in BD Profiles are separated out, so re-uploading an overlapping file doesn't pay for the same research twice.
+- [app/page.tsx](app/page.tsx) — choose an intake, pick a lead, and research it. Ticking several and pressing **Run** processes them in sequence.
 
-Nothing is written to Notion until you click **Write to Notion**.
+Research writes its profile to BD Profiles as soon as it finishes — triage happens in the Notion views, so an in-app approve step only added a click. If the write fails the profile stays on screen with a retry, since the research has already been paid for.
 
 **The inbound database is read-only to this app.** The web form owns it, so nothing is written back — a lead counts as processed when its email already appears in BD Profiles. That also makes the queue self-healing: delete a profile row and the lead returns to the queue.
 

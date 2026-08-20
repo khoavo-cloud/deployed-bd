@@ -75,7 +75,7 @@ function toLead(page: any): Lead {
 }
 
 /** Every email already written to BD Profiles — those leads are done. */
-async function publishedEmails(): Promise<Set<string>> {
+export async function publishedEmails(): Promise<Set<string>> {
   const emails = new Set<string>();
   let cursor: string | undefined;
 
@@ -274,8 +274,10 @@ export async function publishProfile(lead: Lead, profile: Profile) {
     [TARGET_FIELDS.processedAt]: { date: { start: new Date().toISOString() } },
   };
 
-  // Only present once the relation has been added from the Notion UI.
-  if (schema[TARGET_RELATION]?.type === "relation") {
+  // Only present once the relation has been added from the Notion UI, and only
+  // meaningful for leads that came from Notion — a file-sourced lead has no page
+  // to point at, and its synthetic id would be rejected.
+  if (schema[TARGET_RELATION]?.type === "relation" && !lead.id.startsWith("file:")) {
     candidates[TARGET_RELATION] = { relation: [{ id: lead.id }] };
   }
 

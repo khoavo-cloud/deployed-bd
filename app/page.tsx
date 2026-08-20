@@ -24,6 +24,16 @@ export default function Page() {
   // state inside a running async loop would let it keep spending after Stop.
   const [ticked, setTicked] = useState<Set<string>>(new Set());
   const stopRef = useRef(false);
+
+  // Where the queue came from. File leads have no Notion page, so requests must
+  // carry the whole lead rather than an id the server can look up.
+  const [source, setSource] = useState<"notion" | "file">("notion");
+  const [intake, setIntake] = useState<{
+    name: string;
+    mapping: Record<string, string | undefined>;
+    unusable: number;
+  } | null>(null);
+  const [loading, setLoading] = useState(false);
   const [bulk, setBulk] = useState<{
     total: number;
     done: number;
@@ -32,16 +42,54 @@ export default function Page() {
     stopping: boolean;
   } | null>(null);
 
-  useEffect(() => {
+  function loadNotion() {
+    setLoading(true);
     fetch("/api/leads")
       .then((r) => r.json())
       .then((d) => {
         if (d.error) return setError(d.error);
         setLeads(d.leads);
         setCounts(d.counts);
+        setIntake(null);
+        setSource("notion");
       })
-      .catch((e) => setError(String(e)));
-  }, []);
+      .catch((e) => setError(String(e)))
+      .finally(() => setLoading(false));
+  }
+
+  useEffect(loadNotion, []);
+
+  async function upload(file: File) {
+    setLoading(true);
+    setError(null);
+    setSelected(null);
+    setResult(null);
+    setBulk(null);
+    setTicked(new Set());
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      const d = await fetch("/api/intake", { method: "POST", body }).then((r) => r.json());
+      if (d.error) {
+        setError(d.error);
+        return;
+      }
+      setLeads(d.leads);
+      setCounts(d.counts);
+      setIntake({ name: d.sourceName, mapping: d.mapping, unusable: d.counts.unusable });
+      setSource("file");
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  /**
+   * How to refer to a lead when calling the API. Notion leads are re-read
+   * server-side from their id; file leads only exist in this browser session.
+   */
+  const ref = (l: Lead) => (l.id.startsWith("file:") ? { lead: l } : { leadId: l.id });
 
   function select(lead: Lead) {
     setSelected(lead);
@@ -67,7 +115,7 @@ export default function Page() {
       const res = await fetch("/api/enrich", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ leadId: lead.id }),
+        body: JSON.stringify(ref(lead)),
       }).then((r) => r.json());
       if (res.error) {
         setError(res.error);
@@ -79,7 +127,7 @@ export default function Page() {
       const pub = await fetch("/api/publish", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ leadId: lead.id, profile: res.profile }),
+        body: JSON.stringify({ ...ref(lead), profile: res.profile }),
       }).then((r) => r.json());
       if (pub.error) {
         setError(`Researched, but the write to Notion failed: ${pub.error}`);
@@ -104,7 +152,7 @@ export default function Page() {
       const res = await fetch("/api/publish", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ leadId: selected.id, profile: result.profile }),
+        body: JSON.stringify({ ...ref(selected), profile: result.profile }),
       }).then((r) => r.json());
       if (res.error) setError(res.error);
       else {
@@ -163,14 +211,14 @@ export default function Page() {
         const e = await fetch("/api/enrich", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ leadId: lead.id }),
+          body: JSON.stringify(ref(lead)),
         }).then((r) => r.json());
         if (e.error) throw new Error(e.error);
 
         const p = await fetch("/api/publish", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ leadId: lead.id, profile: e.profile }),
+          body: JSON.stringify({ ...ref(lead), profile: e.profile }),
         }).then((r) => r.json());
         if (p.error) throw new Error(p.error);
 
@@ -202,10 +250,57 @@ export default function Page() {
     <div>
       <h1 style={{ fontSize: 24, marginBottom: 4 }}>Deployed BD</h1>
       <p style={{ color: "#78716c", marginTop: 0 }}>
-        {counts
-          ? `${counts.queue} to research · ${counts.skipped} skipped · ${counts.done} done`
-          : "Loading leads from Notion…"}
+        {loading
+          ? "Loading…"
+          : counts
+            ? `${counts.queue} to research · ${counts.skipped} skipped · ${counts.done} already in Notion`
+            : "…"}
       </p>
+
+      <div style={{ ...card, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <strong style={{ fontSize: 13 }}>Intake</strong>
+
+        <button
+          onClick={loadNotion}
+          disabled={running || loading}
+          style={source === "notion" ? tab.on : tab.off}
+        >
+          Notion — Custom: Web Leads
+        </button>
+
+        <label style={{ ...(source === "file" ? tab.on : tab.off), cursor: "pointer" }}>
+          Upload CSV or XLSX
+          <input
+            type="file"
+            accept=".csv,.xlsx,text/csv"
+            disabled={running || loading}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) upload(f);
+              e.target.value = "";
+            }}
+            style={{ display: "none" }}
+          />
+        </label>
+
+        {intake && (
+          <span style={{ fontSize: 13, color: "#78716c" }}>
+            {intake.name}
+            {intake.unusable > 0 && ` · ${intake.unusable} row(s) had no email`}
+          </span>
+        )}
+      </div>
+
+      {intake && (
+        <div style={{ ...card, fontSize: 13, color: "#78716c" }}>
+          Columns read —{" "}
+          {Object.entries(intake.mapping)
+            .filter(([, v]) => v)
+            .map(([k, v]) => `${k}: "${v}"`)
+            .join(" · ") || "none"}
+          . Profiles are still written to Notion BD Profiles.
+        </div>
+      )}
 
       {error && (
         <div style={{ ...card, borderColor: "#dc2626", color: "#dc2626" }}>
@@ -485,6 +580,21 @@ const card: React.CSSProperties = {
   padding: 16,
   marginBottom: 12,
   background: "#fff",
+};
+
+const tabBase: React.CSSProperties = {
+  padding: "6px 12px",
+  borderRadius: 6,
+  fontSize: 13,
+  border: "1px solid #e7e5e4",
+  background: "#fff",
+  color: "#44403c",
+  cursor: "pointer",
+};
+
+const tab = {
+  on: { ...tabBase, borderColor: "#1c1917", background: "#1c1917", color: "#fff" },
+  off: tabBase,
 };
 
 const button: React.CSSProperties = {
