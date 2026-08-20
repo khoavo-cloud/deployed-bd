@@ -14,20 +14,39 @@ import type { Lead } from "./types";
 
 /** Accepted header spellings, best match first. */
 const COLUMNS = {
-  email: ["email", "email address", "e-mail", "mail", "contact email"],
-  company: ["company name", "company", "organisation", "organization", "account", "business"],
-  jobTitle: ["job title", "title", "role", "position"],
+  email: [
+    "email", "email address", "e-mail", "mail", "contact email",
+    "電子郵件", "電子信箱", "電郵", "信箱", "郵件", "邮箱", "メール", "이메일",
+  ],
+  company: [
+    "company name", "company", "organisation", "organization", "account", "business",
+    "公司名稱", "公司名称", "公司", "企業名稱", "企業", "企业", "服務單位", "單位",
+    "会社名", "회사",
+  ],
+  jobTitle: [
+    "job title", "title", "role", "position",
+    "職稱", "职称", "職位", "职位", "頭銜", "役職", "직위",
+  ],
+  /** Family name, where an export splits it from the given name. */
+  surname: ["surname", "last name", "family name", "姓氏", "姓"],
   name: [
     "lead name", "full name", "person name", "contact name", "contact person",
     "name", "contact",
+    "姓名", "全名", "聯絡人", "联系人", "名稱", "名称", "名字", "氏名", "이름",
   ],
   notes: [
     "biggest challenges", "challenges", "message", "notes", "lead notes",
     "comments", "enquiry", "inquiry", "description", "lead source", "source",
+    "產業別", "产业别", "產業", "行業", "行业", "備註", "备注", "需求", "留言",
   ],
 } as const;
 
-const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+/**
+ * Lowercase and strip punctuation and spacing, but keep letters and digits in
+ * any script. Stripping to `[a-z0-9]` erased CJK headers entirely, so a
+ * Chinese-language export matched nothing and failed as "no email column".
+ */
+const norm = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
 
 /**
  * Resolve one field to a column, ignoring any column already claimed.
@@ -55,6 +74,22 @@ function findColumn(
     if (hit) return hit;
   }
   return undefined;
+}
+
+const HAN = /\p{Script=Han}/u;
+
+/**
+ * Rejoin a name an export split into surname and given-name columns.
+ *
+ * CRM exports often carry both, and some repeat the same value in each — this
+ * file has 名稱 and 姓氏 both reading "Alfee" — so identical halves collapse to
+ * one. Han-script names join without a space and surname first, which is the
+ * order they are written in.
+ */
+function joinName(surname: string, given: string): string {
+  if (!surname) return given;
+  if (!given || surname === given) return surname;
+  return HAN.test(surname + given) ? `${surname}${given}` : `${given} ${surname}`;
 }
 
 /** Every remaining notes-ish column, so nothing the lead wrote is lost. */
@@ -129,6 +164,7 @@ export async function readIntakeFile(
     email: claim(COLUMNS.email),
     company: claim(COLUMNS.company),
     jobTitle: claim(COLUMNS.jobTitle),
+    surname: claim(COLUMNS.surname),
     name: claim(COLUMNS.name),
   };
 
@@ -150,7 +186,10 @@ export async function readIntakeFile(
       continue;
     }
 
-    const name = map.name ? (r[map.name] ?? "").trim() : "";
+    const name = joinName(
+      map.surname ? (r[map.surname] ?? "").trim() : "",
+      map.name ? (r[map.name] ?? "").trim() : "",
+    );
     const company = map.company ? (r[map.company] ?? "").trim() : "";
     const message = notes
       .map((c) => (r[c] ? `${c}: ${r[c]}` : ""))
