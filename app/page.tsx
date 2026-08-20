@@ -31,6 +31,7 @@ export default function Page() {
   const [intake, setIntake] = useState<{
     name: string;
     mapping: Record<string, string | undefined>;
+    method: "ai" | "keywords";
     unusable: number;
   } | null>(null);
   const [loading, setLoading] = useState(false);
@@ -76,7 +77,12 @@ export default function Page() {
       }
       setLeads(d.leads);
       setCounts(d.counts);
-      setIntake({ name: d.sourceName, mapping: d.mapping, unusable: d.counts.unusable });
+      setIntake({
+        name: d.sourceName,
+        mapping: d.mapping,
+        method: d.method,
+        unusable: d.counts.unusable,
+      });
       setSource("file");
     } catch (e) {
       setError(String(e));
@@ -293,7 +299,7 @@ export default function Page() {
 
       {intake && (
         <div style={{ ...card, fontSize: 13, color: "#78716c" }}>
-          Columns read —{" "}
+          Columns read ({intake.method === "ai" ? "matched by AI" : "matched by header keywords"}) —{" "}
           {Object.entries(intake.mapping)
             .filter(([, v]) => v)
             .map(([k, v]) => `${k}: "${v}"`)

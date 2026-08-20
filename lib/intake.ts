@@ -9,6 +9,7 @@
  */
 
 import { rowsToRecords, toRecords } from "./csv";
+import { detectEmailColumn, mapColumnsWithAI, profileColumns } from "./column-map";
 import { classify, researchLanguage } from "./triage";
 import type { Lead } from "./types";
 
@@ -98,6 +99,30 @@ function noteColumns(headers: string[], taken: Set<string>): string[] {
   return headers.filter((h) => !taken.has(h) && wanted.some((w) => norm(h).includes(w)));
 }
 
+/**
+ * Header-keyword mapping — the fallback when the model is unavailable, and the
+ * source of the email column when no column's *values* look like addresses.
+ *
+ * Fields claim columns in order, most specific first: the matching is
+ * deliberately loose, and "company_name" contains "name", so without claiming
+ * it would satisfy both and the real person-name column would be dropped.
+ */
+function keywordMap(headers: string[]) {
+  const taken = new Set<string>();
+  const claim = (candidates: readonly string[]) => {
+    const hit = findColumn(headers, candidates, taken);
+    if (hit) taken.add(hit);
+    return hit;
+  };
+
+  const email = claim(COLUMNS.email);
+  const company = claim(COLUMNS.company);
+  const jobTitle = claim(COLUMNS.jobTitle);
+  const surname = claim(COLUMNS.surname);
+  const name = claim(COLUMNS.name);
+  return { email, company, jobTitle, surname, name, notes: noteColumns(headers, taken) };
+}
+
 async function readXlsx(buffer: ArrayBuffer): Promise<string[][]> {
   const ExcelJS = (await import("exceljs")).default;
   const wb = new ExcelJS.Workbook();
@@ -132,6 +157,8 @@ export type IntakeResult = {
   unusable: number;
   /** Which column each field was read from, so the UI can show the mapping. */
   mapping: Record<string, string | undefined>;
+  /** Whether the model or the keyword fallback resolved the columns. */
+  method: "ai" | "keywords";
   sourceName: string;
 };
 
@@ -150,32 +177,39 @@ export async function readIntakeFile(
   if (!records.length) throw new Error("No rows found in the file.");
 
   const headers = Object.keys(records[0]);
+  const stats = profileColumns(records);
 
-  // Resolution order is significant: each field claims its column, so the
-  // narrower fields get first refusal before the looser ones run.
-  const taken = new Set<string>();
-  const claim = (candidates: readonly string[]) => {
-    const hit = findColumn(headers, candidates, taken);
-    if (hit) taken.add(hit);
-    return hit;
-  };
-
-  const map = {
-    email: claim(COLUMNS.email),
-    company: claim(COLUMNS.company),
-    jobTitle: claim(COLUMNS.jobTitle),
-    surname: claim(COLUMNS.surname),
-    name: claim(COLUMNS.name),
-  };
-
-  if (!map.email) {
+  // Found from the values, not the header, so it works in any language and
+  // cannot be hallucinated. This is the required field and the dedupe key.
+  const email = detectEmailColumn(stats) ?? keywordMap(headers).email;
+  if (!email) {
     throw new Error(
-      `No email column found. Looked for ${COLUMNS.email.join(", ")}. ` +
+      `No email column found. No column contained email addresses, and no header matched a known name. ` +
         `Columns present: ${headers.join(", ")}`,
     );
   }
 
-  const notes = noteColumns(headers, taken);
+  const ai = await mapColumnsWithAI(stats);
+  const fallback = keywordMap(headers);
+  const chosen = ai ?? fallback;
+
+  const map = {
+    email,
+    company: chosen.company,
+    jobTitle: chosen.jobTitle,
+    surname: chosen.surname,
+    name: chosen.name,
+  };
+  const method: "ai" | "keywords" = ai ? "ai" : "keywords";
+
+  // Never let a semantic field claim the email column.
+  for (const k of ["company", "jobTitle", "surname", "name"] as const) {
+    if (map[k] === email) map[k] = undefined;
+  }
+
+  const notes = chosen.notes.filter(
+    (n) => n !== email && !Object.values(map).includes(n),
+  );
   const byEmail = new Map<string, Lead>();
   let unusable = 0;
 
@@ -234,6 +268,7 @@ export async function readIntakeFile(
     skipped,
     unusable,
     mapping: { ...map, notes: notes.join(", ") || undefined },
+    method,
     sourceName: filename,
   };
 }

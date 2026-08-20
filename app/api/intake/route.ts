@@ -28,6 +28,7 @@ export async function POST(req: Request) {
       leads: queue,
       skipped: parsed.skipped,
       mapping: parsed.mapping,
+      method: parsed.method,
       sourceName: parsed.sourceName,
       counts: {
         queue: queue.length,
