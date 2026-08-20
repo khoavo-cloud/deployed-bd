@@ -15,9 +15,12 @@ import type { Lead } from "./types";
 /** Accepted header spellings, best match first. */
 const COLUMNS = {
   email: ["email", "email address", "e-mail", "mail", "contact email"],
-  name: ["lead name", "full name", "name", "contact name", "contact"],
   company: ["company name", "company", "organisation", "organization", "account", "business"],
   jobTitle: ["job title", "title", "role", "position"],
+  name: [
+    "lead name", "full name", "person name", "contact name", "contact person",
+    "name", "contact",
+  ],
   notes: [
     "biggest challenges", "challenges", "message", "notes", "lead notes",
     "comments", "enquiry", "inquiry", "description", "lead source", "source",
@@ -26,24 +29,38 @@ const COLUMNS = {
 
 const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 
-function findColumn(headers: string[], candidates: readonly string[]): string | undefined {
+/**
+ * Resolve one field to a column, ignoring any column already claimed.
+ *
+ * Exclusivity matters because the loose matching is deliberately greedy: a
+ * header called "company_name" contains "name", so without claiming it would
+ * satisfy both `company` and `name` and the real person-name column would be
+ * dropped. Fields are therefore resolved most-specific-first in COLUMNS order.
+ */
+function findColumn(
+  headers: string[],
+  candidates: readonly string[],
+  taken: Set<string>,
+): string | undefined {
+  const free = headers.filter((h) => !taken.has(h));
   const wanted = candidates.map(norm);
+
   // Exact match first, so "email" beats "email_verified" when both are present.
   for (const w of wanted) {
-    const hit = headers.find((h) => norm(h) === w);
+    const hit = free.find((h) => norm(h) === w);
     if (hit) return hit;
   }
   for (const w of wanted) {
-    const hit = headers.find((h) => norm(h).includes(w));
+    const hit = free.find((h) => norm(h).includes(w));
     if (hit) return hit;
   }
   return undefined;
 }
 
-/** Every column matching a notes-ish name, so nothing the lead wrote is lost. */
-function noteColumns(headers: string[]): string[] {
+/** Every remaining notes-ish column, so nothing the lead wrote is lost. */
+function noteColumns(headers: string[], taken: Set<string>): string[] {
   const wanted = COLUMNS.notes.map(norm);
-  return headers.filter((h) => wanted.some((w) => norm(h).includes(w)));
+  return headers.filter((h) => !taken.has(h) && wanted.some((w) => norm(h).includes(w)));
 }
 
 async function readXlsx(buffer: ArrayBuffer): Promise<string[][]> {
@@ -98,11 +115,21 @@ export async function readIntakeFile(
   if (!records.length) throw new Error("No rows found in the file.");
 
   const headers = Object.keys(records[0]);
+
+  // Resolution order is significant: each field claims its column, so the
+  // narrower fields get first refusal before the looser ones run.
+  const taken = new Set<string>();
+  const claim = (candidates: readonly string[]) => {
+    const hit = findColumn(headers, candidates, taken);
+    if (hit) taken.add(hit);
+    return hit;
+  };
+
   const map = {
-    email: findColumn(headers, COLUMNS.email),
-    name: findColumn(headers, COLUMNS.name),
-    company: findColumn(headers, COLUMNS.company),
-    jobTitle: findColumn(headers, COLUMNS.jobTitle),
+    email: claim(COLUMNS.email),
+    company: claim(COLUMNS.company),
+    jobTitle: claim(COLUMNS.jobTitle),
+    name: claim(COLUMNS.name),
   };
 
   if (!map.email) {
@@ -112,7 +139,7 @@ export async function readIntakeFile(
     );
   }
 
-  const notes = noteColumns(headers);
+  const notes = noteColumns(headers, taken);
   const byEmail = new Map<string, Lead>();
   let unusable = 0;
 
