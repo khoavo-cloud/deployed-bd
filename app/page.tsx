@@ -35,6 +35,16 @@ export default function Page() {
     unusable: number;
   } | null>(null);
   const [loading, setLoading] = useState(false);
+
+  // Narrow the queue before spending anything. A 541-row event export is mostly
+  // consumer addresses, and the business-domain subset is where the value is.
+  const [filter, setFilter] = useState({
+    segment: "all",
+    language: "all",
+    withCompany: false,
+    q: "",
+  });
+
   const [bulk, setBulk] = useState<{
     total: number;
     done: number;
@@ -252,6 +262,32 @@ export default function Page() {
 
   const running = bulk !== null && bulk.done < bulk.total && !bulk.stopping;
 
+  const visible = leads.filter((l) => {
+    if (filter.segment !== "all" && l.segment !== filter.segment) return false;
+    if (filter.language !== "all" && l.language !== filter.language) return false;
+    if (filter.withCompany && !l.company.trim()) return false;
+    if (filter.q) {
+      const q = filter.q.toLowerCase();
+      const hay = `${l.email} ${l.company} ${l.name} ${l.jobTitle}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+
+  /**
+   * Changing a filter clears the selection.
+   *
+   * Otherwise leads ticked under one filter stay ticked once hidden, and Run
+   * would research rows the operator can no longer see — an expensive surprise.
+   */
+  function changeFilter(patch: Partial<typeof filter>) {
+    setFilter((f) => ({ ...f, ...patch }));
+    setTicked(new Set());
+  }
+
+  const languages = [...new Set(leads.map((l) => l.language))].sort();
+  const segments = [...new Set(leads.map((l) => l.segment))].sort();
+
   return (
     <div>
       <h1 style={{ fontSize: 24, marginBottom: 4 }}>Deployed BD</h1>
@@ -317,17 +353,74 @@ export default function Page() {
       <div style={{ display: "grid", gridTemplateColumns: "320px 1fr", gap: 20 }}>
         <div>
           {leads.length > 0 && (
+            <div style={{ ...card, padding: 10, display: "grid", gap: 6 }}>
+              <input
+                placeholder="Filter by email, company, name…"
+                value={filter.q}
+                onChange={(e) => changeFilter({ q: e.target.value })}
+                disabled={running}
+                style={{
+                  padding: "5px 8px", fontSize: 13, borderRadius: 6,
+                  border: "1px solid #e7e5e4", width: "100%", boxSizing: "border-box",
+                }}
+              />
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                <select
+                  value={filter.segment}
+                  onChange={(e) => changeFilter({ segment: e.target.value })}
+                  disabled={running}
+                  style={dropdown}
+                >
+                  <option value="all">All segments</option>
+                  {segments.map((s) => (
+                    <option key={s} value={s}>
+                      {s} ({leads.filter((l) => l.segment === s).length})
+                    </option>
+                  ))}
+                </select>
+                {languages.length > 1 && (
+                  <select
+                    value={filter.language}
+                    onChange={(e) => changeFilter({ language: e.target.value })}
+                    disabled={running}
+                    style={dropdown}
+                  >
+                    <option value="all">All languages</option>
+                    {languages.map((l) => (
+                      <option key={l} value={l}>
+                        {l} ({leads.filter((x) => x.language === l).length})
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <label style={{ fontSize: 13, color: "#78716c", display: "flex", alignItems: "center", gap: 4 }}>
+                  <input
+                    type="checkbox"
+                    checked={filter.withCompany}
+                    onChange={(e) => changeFilter({ withCompany: e.target.checked })}
+                    disabled={running}
+                  />
+                  has company
+                </label>
+              </div>
+            </div>
+          )}
+
+          {leads.length > 0 && (
             <div style={{ ...card, padding: 10, display: "flex", alignItems: "center", gap: 8 }}>
               <input
                 type="checkbox"
-                checked={ticked.size === leads.length && leads.length > 0}
+                checked={ticked.size > 0 && ticked.size === visible.length}
                 onChange={(e) =>
-                  setTicked(e.target.checked ? new Set(leads.map((l) => l.id)) : new Set())
+                  setTicked(e.target.checked ? new Set(visible.map((l) => l.id)) : new Set())
                 }
-                disabled={running}
+                disabled={running || visible.length === 0}
               />
               <span style={{ fontSize: 13, color: "#78716c", flex: 1 }}>
-                {ticked.size ? `${ticked.size} selected` : "Select all"}
+                {ticked.size
+                  ? `${ticked.size} selected`
+                  : `Select all ${visible.length}`}
+                {visible.length !== leads.length && ` · ${leads.length - visible.length} hidden`}
               </span>
               <button
                 onClick={runBulk}
@@ -344,7 +437,7 @@ export default function Page() {
             </div>
           )}
 
-          {leads.map((lead) => (
+          {visible.map((lead) => (
             <div
               key={lead.id}
               style={{
@@ -585,6 +678,14 @@ const card: React.CSSProperties = {
   borderRadius: 8,
   padding: 16,
   marginBottom: 12,
+  background: "#fff",
+};
+
+const dropdown: React.CSSProperties = {
+  padding: "4px 6px",
+  fontSize: 13,
+  borderRadius: 6,
+  border: "1px solid #e7e5e4",
   background: "#fff",
 };
 
